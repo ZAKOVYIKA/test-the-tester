@@ -1,4 +1,4 @@
-classdef aerodinamicheskiyParadoks < handle                                
+classdef aerodynamicParadox < handle                                
                                                                            
 % Данный класс относится к моделированию т.н. "аэродинамического парадокса 
 % спутника" — попадая в верхние слои атмосферы, космический аппарат, 
@@ -10,45 +10,55 @@ classdef aerodinamicheskiyParadoks < handle
     properties 
         
         % Мировые константы                                                
-        GM = 6.67.*10.^(-11).*6.*10.^24;
-        Rearth = 6400000;
-
-        % Параметры спутника                                               
-        SfM = 1; % отн.ед.
-        Hic = 500000; % м
-        Fic = 0; % рад
-        dFdtic  % рад/сек
+        G = 6.67e-11; % м3/(кг*с2) 
+        earthMass = 5.97e24; % кг 
+        earthRadius = 6371e3; % м
 
         % Параметры окружающей среды                                       
         Cx = 2; 
-        rho0 = 5.*10.^(-8); % кг/м3
-        H = 40000;
+        p0 = 5e-8; % кг/м3
+        H = 40000; % м?
 
+        % Параметры спутника                                               
+        satelliteArea = 1; % отн. м2
+        satelliteMass = 100; % отн. кг
+
+        startHeight = 500e3; % м
+
+        startPhi = 0; % рад
+        startRadius % м
+        
+        startPhiDer  % рад/сек 
+        startOrbitDer = 0; % м/сек 
+        
         % Константы задачи
-        tau = 0.1;
+        dT = 0.1; % с
 
     end
     
     methods
-        function obj = aerodinamicheskiyParadoks(name, value)              
+        function obj = aerodynamicParadox(name, value) 
+            % Конструктор           
                                                                            
-            % Конструктор
             arguments (Repeating)                                          
                 name
                 value
-            end
-
-            obj.dFdtic = sqrt(obj.GM./(obj.Hic + obj.Rearth).^3);          
+            end     
             
             for i = 1:numel(value)                                         
                 obj.(name{i}) = value{i};
             end
+            
+            obj.startRadius = obj.earthRadius + obj.startHeight;
+            obj.startPhiDer = sqrt(obj.G * obj.earthMass / (obj.startRadius)^3);
+
         end
         
-        function [figureHandle] = plot_velocity_and_trajectory(obj)        
-            % Рисунок
-
-            [radius, angle, radiisTimeDerivative, anglesTimeDerivative] = obj.solve_diff_equation(10); 
+        function [figureHandle] = plotVelocityAndTrajectory(obj, periodAmount) 
+            % Рисунок     
+            
+            [radiusArray, phiArray, radiusDerArray, phiDerArray, linearSpeed, timesteps] = ...
+                obj.solveDiffEquation(periodAmount); 
             
             figureHandle = figure;
             tileHandle = tiledlayout(1, 2);
@@ -57,113 +67,85 @@ classdef aerodinamicheskiyParadoks < handle
             ax2 = nexttile;                                                
             
                                                                            
-            h1 = plot(ax1, sqrt(anglesTimeDerivative.^2.*radius.^2 ...     
-                                + radiisTimeDerivative.^2));      
-            
+            h1 = plot(ax1, timesteps, linearSpeed);      
             
             axes(ax2)
             h2 = polarplot( [0:0.01:2.*pi], ...                             
-                           obj.Rearth.*ones(size([0:0.01:2.*pi])), 'r');   
+                           obj.earthRadius.*ones(1, numel([0:0.01:2.*pi])), 'r');  
+
             ax2 = gca;
             hold(ax2, 'on')
-            h3 = polarplot(ax2, angle, radius, 'b');                       
+            h3 = polarplot(ax2, phiArray, radiusArray, 'b');
+            
         end
+    end
 
-        function [R, F, dRdt, dFdt] = solve_diff_equation(obj, periodsAmount)
+        %%
+    methods (Access = private)
+        function [radiusArray, phiArray, radiusDerArray, phiDerArray, linearSpeed, timesteps] = ...
+                solveDiffEquation(obj, periodAmount)
             % Решение разностной схемы для движения спутника по орбите с трением. 
 
-            timesteps = [0:obj.tau:periodsAmount.*2.*pi./obj.dFdtic]';     
+            dummy = periodAmount * 2 * pi / obj.startPhiDer;
+            timesteps = (0:obj.dT:dummy)';     
 
-            R = zeros(numel(timesteps), 1);
-            F = zeros(numel(timesteps), 1);
-            dRdt = zeros(numel(timesteps), 1);
-            dFdt = zeros(numel(timesteps), 1);
+            radiusArray = zeros(numel(timesteps), 1);
+            phiArray = zeros(numel(timesteps), 1);
+            radiusDerArray = zeros(numel(timesteps), 1);
+            phiDerArray = zeros(numel(timesteps), 1);
+            linearSpeed = zeros(numel(timesteps), 1);
             
             % 0-ой узел
-            R(1) = obj.Hic + obj.Rearth;
-            F(1) = obj.Fic;
+            radiusArray(1) = obj.startRadius;
+            phiArray(1) = obj.startPhi;
+            radiusDerArray(1) = obj.startOrbitDer;
+            phiDerArray(1) = obj.startPhiDer;
+            linearSpeed(1) = sqrt(radiusDerArray(1)^2 +...
+                radiusArray(1)^2 * phiDerArray(1)^2);
 
-            % 1-ый узел
-            R(2) = obj.Hic + obj.Rearth;
-            F(2) = obj.Fic + obj.dFdtic.*obj.tau;
+%             % 1-ый узел
+%             radiusArray(2) = obj.Hic + obj.Rearth;
+%             phiArray(2) = obj.Fic + obj.dFdtic.*obj.tau;
 
-            for k = 2:numel(timesteps)-1                                   
-                % 1-ые производные и угол
-                dValdt_func = @(Val2, Val1) (Val2 - Val1)./obj.tau;              
-                beta_func = @(dRdt, dFdt, R) atan(dRdt./(dFdt.*R));        
-                
-                % Сила трения 
-                prefactor = obj.Cx.*obj.SfM.*obj.rho0./2;               
-                Ftr_func = @(dRdt, dFdt, R) prefactor.*(dRdt.^2 + dFdt.^2.*R.^2) .* exp(- (R - obj.Rearth)./obj.H); 
-                
-                % Производные
-                dRdt(k) = dValdt_func(R(k), R(k-1));
-                dFdt(k) = dValdt_func(F(k), F(k-1));
-                    
-                Ftr = Ftr_func(dRdt(k), dFdt(k), R(k));
-            
-                beta = beta_func(dRdt(k), dFdt(k), R(k));
-                
-                % Координаты
-                R(k+1) = 2.*R(k) - R(k-1) + obj.tau.^2.*(R(k).*dFdt(k).^2 - obj.GM./R(k).^2 - Ftr.*sin(beta));
-                F(k+1) = 2.*F(k) - F(k-1) + obj.tau.^2./R(k) .* (-Ftr.*cos(beta) - 2.*dFdt(k).*dRdt(k));
+            for idx = 2:numel(timesteps) 
+                % расчет в idx-1 точке
+                % расчет плотности воздуха
+                p = obj.p0 * exp(-(radiusArray(idx-1) - obj.earthRadius) / obj.H );
+                % сила трения
+                Ffr = obj.Cx * obj.satelliteArea * (p * linearSpeed(idx-1)^2)/2;
+                % угол между векторами скоростей, рад
+                beta = atan(radiusDerArray(idx-1) / (phiDerArray(idx-1) * radiusArray(idx-1)));
+                % расчет второй производной по радиусу
+                radiusSecDer = radiusArray(idx-1) * phiDerArray(idx-1)^2 ...
+                    - obj.G * obj.earthMass / radiusArray(idx-1)^2 ...
+                    - Ffr * sin(beta) / obj.satelliteMass;
+                % вторая производная угла положения
+                phiSecDer = -((Ffr * cos(beta) / obj.satelliteMass) ...
+                    - (2 * phiDerArray(idx-1) * radiusDerArray(idx-1))) ...
+                    / radiusArray(idx-1);
+
+                radiusArray(idx) = radiusArray(idx-1) + obj.dT * radiusDerArray(idx-1) ...
+                    + radiusSecDer * obj.dT^2 / 2;
+
+                if (radiusArray(idx) < obj.earthRadius)
+                    radiusArray(idx:end) = [];
+                    phiArray(idx:end) = [];
+                    radiusDerArray(idx:end) = [];
+                    phiDerArray(idx:end) = [];
+                    linearSpeed(idx:end) = [];
+                    timesteps(idx:end) = [];
+                    break
+                end
+                phiArray(idx) = phiArray(idx-1) + obj.dT * phiDerArray(idx-1) ...
+                    + phiSecDer * obj.dT^2 / 2;
+                radiusDerArray(idx) = radiusDerArray(idx-1) + radiusSecDer * obj.dT;
+                phiDerArray(idx) = phiDerArray(idx-1) + phiSecDer * obj.dT;
+                linearSpeed(idx) = sqrt(radiusDerArray(idx)^2 +...
+                    radiusArray(idx)^2 * phiDerArray(idx)^2);
+ 
             end
-            
-            % Производные последнего узла
-            dRdt(k+1) = dValdt_func(R(k+1), R(k));
-            dFdt(k+1) = dValdt_func(F(k+1), F(k));
-            
-            % Удалить 0-ой узел
-            R(1) = [];
-            F(1) = [];
-            dRdt(1) = [];
-            dFdt(1) = [];
 
         end
     end
 
 end
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
